@@ -1,0 +1,61 @@
+name: "01 - status says ACTIVE, interception is inert"
+
+# Claim under test:
+#   `jf package-alias install` + adding the alias dir to PATH makes
+#   `jf package-alias status` report "ENABLED / active", which *looks* like
+#   `go` is now wired through JFrog.
+# Reality:
+#   Interception is gated behind the JFROG_CLI_GHOST_FROG env var (off by
+#   default). `status` never checks it, so it reports "active" while a plain
+#   `go mod download` still falls through to `jf mod` and fails.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1" # weekly: track if/when JFrog changes the behavior
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        jf: ["2.93.0", "2.111.0", "latest"]
+    env:
+      JFROG_CLI_HOME_DIR: ${{ github.workspace }}/.jfrog
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: "1.23"
+
+      - uses: jfrog/setup-jfrog-cli@deda456d982fc5e9a7a020b63eb0d2968aedd33e # v5.1.0
+        with:
+          version: ${{ matrix.jf }}
+
+      - name: Install the go package alias
+        run: jf package-alias install --packages go
+
+      - name: status reports ENABLED + "active"
+        run: |
+          source "${GITHUB_WORKSPACE}/scripts/assert.sh"
+          enable_alias_on_path
+          STATUS="$(jf package-alias status 2>&1)"
+          printf '%s\n' "$STATUS"
+          assert_contains "$STATUS" "State: ENABLED" "status reports State: ENABLED"
+          assert_contains "$STATUS" "Package aliasing is active" "status claims aliasing is active"
+
+      - name: ...yet plain `go mod download` fails (interception never ran)
+        run: |
+          source "${GITHUB_WORKSPACE}/scripts/assert.sh"
+          enable_alias_on_path
+          run_go unset mod download
+          assert_nonzero "$RUN_CODE" "go mod download fails even though status said 'active'"
+          assert_contains "$RUN_OUT" "is not a jf command" "shim fell through to 'jf mod' (no JFROG_CLI_GHOST_FROG)"

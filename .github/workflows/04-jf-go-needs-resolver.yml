@@ -1,0 +1,63 @@
+name: "04 - jf go needs a resolver repo, with no native fallback"
+
+# Claim under test:
+#   Once aliasing is truly active (env=true), `go` "just works".
+# Reality:
+#   The shim rewrites `go ...` to `jf go ...`, and `jf go` hard-requires a
+#   resolver repo (jf go-config / .jfrog/projects/go.yaml). There is NO fallback
+#   to native go — so even fully offline commands like `go version` and
+#   `go build` fail when no resolver is configured.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        jf: ["2.93.0", "2.111.0", "latest"]
+    env:
+      JFROG_CLI_HOME_DIR: ${{ github.workspace }}/.jfrog
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: "1.23"
+
+      - uses: jfrog/setup-jfrog-cli@deda456d982fc5e9a7a020b63eb0d2968aedd33e # v5.1.0
+        with:
+          version: ${{ matrix.jf }}
+
+      - name: Install the go package alias
+        run: jf package-alias install --packages go
+
+      - name: "`go mod download` is rewritten to `jf go` and demands a resolver"
+        run: |
+          source "${GITHUB_WORKSPACE}/scripts/assert.sh"
+          enable_alias_on_path
+          run_go true mod download
+          assert_contains "$RUN_OUT" "Transforming 'go' to 'jf go'" "the alias did transform go -> jf go"
+          assert_nonzero "$RUN_CODE" "go mod download fails without a configured resolver repo"
+          assert_contains "$RUN_OUT" "go-config" "jf go requires 'jf go-config' (resolver repo)"
+
+      - name: "even offline `go version` / `go build` break (no native fallback)"
+        run: |
+          source "${GITHUB_WORKSPACE}/scripts/assert.sh"
+          enable_alias_on_path
+          run_go true version
+          assert_nonzero "$RUN_CODE" "'go version' fails under aliasing"
+          assert_contains "$RUN_OUT" "go-config" "'go version' -> 'jf go version' -> needs a resolver repo"
+          run_go true build ./...
+          assert_nonzero "$RUN_CODE" "offline 'go build' fails under aliasing"
+          assert_contains "$RUN_OUT" "go-config" "'go build' -> 'jf go build' -> needs a resolver repo"

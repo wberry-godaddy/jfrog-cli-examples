@@ -1,0 +1,69 @@
+name: "02 - one command, three realities (JFROG_CLI_GHOST_FROG)"
+
+# The SAME command, `go mod download`, behaves three different ways depending
+# only on the JFROG_CLI_GHOST_FROG environment variable:
+#
+#   unset  -> shim misfires: jf parses `mod` as a command -> "is not a jf command"
+#   audit  -> logs the routing decision (mode=jf) and runs native go (succeeds)
+#   true   -> rewrites to `jf go mod download` (then needs a resolver repo)
+#
+# This is the crux of the expectation-vs-reality gap.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        jf: ["2.93.0", "2.111.0", "latest"]
+    env:
+      JFROG_CLI_HOME_DIR: ${{ github.workspace }}/.jfrog
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: "1.23"
+
+      - uses: jfrog/setup-jfrog-cli@deda456d982fc5e9a7a020b63eb0d2968aedd33e # v5.1.0
+        with:
+          version: ${{ matrix.jf }}
+
+      - name: Install the go package alias
+        run: jf package-alias install --packages go
+
+      - name: "Reality A — env UNSET: shim misfires to 'jf mod'"
+        run: |
+          source "${GITHUB_WORKSPACE}/scripts/assert.sh"
+          enable_alias_on_path
+          run_go unset mod download
+          assert_nonzero "$RUN_CODE" "go mod download fails when JFROG_CLI_GHOST_FROG is unset"
+          assert_contains "$RUN_OUT" "is not a jf command" "interception off: jf treats 'mod' as a top-level command"
+
+      - name: "Reality B — env=audit: routing decision is jf, native go runs"
+        run: |
+          source "${GITHUB_WORKSPACE}/scripts/assert.sh"
+          enable_alias_on_path
+          run_go audit mod download
+          assert_contains "$RUN_OUT" "Would intercept 'go' (mode=jf)" "audit confirms the intended route is 'jf go'"
+          assert_zero "$RUN_CODE" "audit passes through to native go, which succeeds"
+
+      - name: "Reality C — env=true: shim rewrites to 'jf go mod download'"
+        run: |
+          source "${GITHUB_WORKSPACE}/scripts/assert.sh"
+          enable_alias_on_path
+          run_go true mod download
+          assert_contains "$RUN_OUT" "Transforming 'go' to 'jf go'" "interception on: go rewritten to 'jf go'"
+          assert_nonzero "$RUN_CODE" "fails only because no resolver repo is configured (no public JFrog Go proxy)"
+          assert_contains "$RUN_OUT" "go-config" "next step would be 'jf go-config' against a real Artifactory"

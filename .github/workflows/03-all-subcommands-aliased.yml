@@ -1,0 +1,64 @@
+name: "03 - every go subcommand is aliased (not just 'go build')"
+
+# Claim under test:
+#   The status banner only ever shows "go build", which suggests build is the
+#   thing that gets intercepted.
+# Reality:
+#   getModeForTool() defaults *every* go subcommand to ModeJF. We prove it with
+#   audit mode, which logs the resolved mode for each invocation while still
+#   running native go. Every subcommand reports mode=jf.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        jf: ["2.93.0", "2.111.0", "latest"]
+    env:
+      JFROG_CLI_HOME_DIR: ${{ github.workspace }}/.jfrog
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: "1.23"
+
+      - uses: jfrog/setup-jfrog-cli@deda456d982fc5e9a7a020b63eb0d2968aedd33e # v5.1.0
+        with:
+          version: ${{ matrix.jf }}
+
+      - name: Install the go package alias
+        run: jf package-alias install --packages go
+
+      - name: Audit every common subcommand — all resolve to mode=jf
+        run: |
+          source "${GITHUB_WORKSPACE}/scripts/assert.sh"
+          enable_alias_on_path
+          # Note: we assert the routing DECISION (mode=jf), not the native exit
+          # code, since the point is which commands are intercepted.
+          for sub in \
+            "version" \
+            "env GOMOD" \
+            "list ./..." \
+            "build ./..." \
+            "vet ./..." \
+            "test ./..." \
+            "mod download" \
+            "mod verify"; do
+            # shellcheck disable=SC2086
+            run_go audit $sub
+            assert_contains "$RUN_OUT" "Would intercept 'go' (mode=jf)" "go ${sub} -> mode=jf"
+          done
+          echo "Proven: the whole 'go' surface defaults to jf-mode, not just 'go build'."

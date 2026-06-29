@@ -1,0 +1,79 @@
+name: "06 - aliasing wraps EVERY go call (tooling risk)"
+
+# Because the shim intercepts every `go` invocation (when active), any tool that
+# shells out to `go` is affected too. With env=true and no resolver configured,
+# even `go env` — the first thing many tools call — fails.
+#
+# - The deterministic step proves `go env` breaks (hard assertion).
+# - The exploratory step runs golangci-lint under aliasing and simply records
+#   what happens (golangci-lint shells out to `go` heavily). It never fails the
+#   job; it documents observed reality, which is the whole point of this repo.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        jf: ["2.93.0", "2.111.0", "latest"]
+    env:
+      JFROG_CLI_HOME_DIR: ${{ github.workspace }}/.jfrog
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: "1.23"
+
+      - uses: jfrog/setup-jfrog-cli@deda456d982fc5e9a7a020b63eb0d2968aedd33e # v5.1.0
+        with:
+          version: ${{ matrix.jf }}
+
+      - name: Install the go package alias
+        run: jf package-alias install --packages go
+
+      - name: deterministic — `go env` (what tools call first) breaks under aliasing
+        run: |
+          source "${GITHUB_WORKSPACE}/scripts/assert.sh"
+          enable_alias_on_path
+          run_go true env GOMOD
+          assert_nonzero "$RUN_CODE" "'go env GOMOD' fails when aliasing is active"
+          assert_contains "$RUN_OUT" "go-config" "'go env' is routed to 'jf go env' and needs a resolver repo"
+
+      - name: exploratory — run golangci-lint under aliasing and record the outcome
+        continue-on-error: true
+        run: |
+          source "${GITHUB_WORKSPACE}/scripts/assert.sh"
+          # Install golangci-lint with the REAL go (alias not yet on PATH).
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/v1.61.0/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" v1.61.0
+          export PATH="$(go env GOPATH)/bin:${PATH}"
+
+          # Now activate the alias and run the linter.
+          enable_alias_on_path
+          export JFROG_CLI_GHOST_FROG=true
+          echo "Running golangci-lint with the go alias active (JFROG_CLI_GHOST_FROG=true)..."
+          set +e
+          OUT="$(golangci-lint run ./... 2>&1)"
+          CODE=$?
+          set -e
+          printf '%s\n' "$OUT"
+          echo "golangci-lint exit=${CODE}"
+          if [ "$CODE" -ne 0 ] && printf '%s' "$OUT" | grep -qiE "go-config|jf go|is not a jf command"; then
+            echo "OBSERVED: package aliasing broke golangci-lint's internal go calls."
+          elif [ "$CODE" -ne 0 ]; then
+            echo "OBSERVED: golangci-lint failed; inspect output above for the cause."
+          else
+            echo "OBSERVED: golangci-lint was unaffected (it likely invokes go via an absolute GOROOT path)."
+          fi

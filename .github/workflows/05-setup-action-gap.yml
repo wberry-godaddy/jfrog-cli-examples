@@ -1,0 +1,67 @@
+name: "05 - setup-jfrog-cli enable-package-alias does not activate it"
+
+# Claim under test:
+#   `jfrog/setup-jfrog-cli@v5.1.0` with `enable-package-alias: true` makes plain
+#   `go` commands flow through JFrog in later steps.
+# Reality:
+#   The action runs `jf package-alias install` and appends the alias dir to
+#   GITHUB_PATH, but it never exports JFROG_CLI_GHOST_FROG. Since interception is
+#   off by default, `go mod download` fails with the exact error seen in real CI.
+#
+# This needs no JFrog instance and no secrets — JF_URL is intentionally not set.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        jf: ["2.93.0", "2.111.0", "latest"]
+    env:
+      JFROG_CLI_HOME_DIR: ${{ github.workspace }}/.jfrog
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: "1.23"
+
+      # This is exactly the gdcorp setup: enable-package-alias, no env var.
+      - uses: jfrog/setup-jfrog-cli@deda456d982fc5e9a7a020b63eb0d2968aedd33e # v5.1.0
+        with:
+          version: ${{ matrix.jf }}
+          enable-package-alias: true
+
+      - name: The action installed the alias but did NOT export the env var
+        run: |
+          source "${GITHUB_WORKSPACE}/scripts/assert.sh"
+          echo "JFROG_CLI_GHOST_FROG='${JFROG_CLI_GHOST_FROG:-<unset>}'"
+          if [ -n "${JFROG_CLI_GHOST_FROG:-}" ]; then
+            echo "FAIL: the action set JFROG_CLI_GHOST_FROG (behavior changed!)"; exit 1
+          fi
+          echo "PASS: setup-jfrog-cli did not set JFROG_CLI_GHOST_FROG"
+          STATUS="$(jf package-alias status 2>&1)"
+          printf '%s\n' "$STATUS"
+          assert_contains "$STATUS" "Package aliasing is active" "status claims active (alias dir is on GITHUB_PATH)"
+
+      - name: So a plain `go mod download` fails out of the box
+        run: |
+          source "${GITHUB_WORKSPACE}/scripts/assert.sh"
+          set +e
+          OUT="$(go mod download 2>&1)"
+          CODE=$?
+          set -e
+          printf '%s\n' "$OUT"
+          assert_nonzero "$CODE" "go mod download fails right after enable-package-alias: true"
+          assert_contains "$OUT" "is not a jf command" "reproduces the real CI failure: 'jf mod' is not a jf command"

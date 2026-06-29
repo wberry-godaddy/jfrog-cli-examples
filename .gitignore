@@ -1,0 +1,8 @@
+# Built binary from `go build ./...`
+/jfrog-cli-examples
+
+# JFrog CLI home used by the proofs / local runs
+.jfrog/
+
+# Go tooling installed locally during exploratory runs
+/bin/
