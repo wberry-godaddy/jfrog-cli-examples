@@ -81,9 +81,13 @@ JFROG_CLI_GHOST_FROG=true  go mod download        # Transforming 'go' to 'jf go'
 
 ## Versions under test
 
-Each workflow runs against a matrix of `jf` versions: `2.93.0` (the minimum that
-ships package aliasing), `2.111.0`, and `latest`. `fail-fast` is disabled so a
-change in any single version is visible without masking the others.
+Each workflow runs against a matrix of `jf` versions: `2.100.0`, `2.111.0`, and
+`latest`. `fail-fast` is disabled so a change in any single version is visible
+without masking the others.
+
+Note: `2.100.0` is the first release that actually ships the `jf package-alias`
+command, even though `setup-jfrog-cli` advertises a `2.93.0` floor for
+`enable-package-alias` — the command does not exist before `2.100.0`.
 
 ## Layout
 
